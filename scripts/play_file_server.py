@@ -9,7 +9,7 @@ import rospy
 from actionlib import SimpleActionServer
 from audio_file_player.msg import AudioFilePlayAction, AudioFilePlayGoal, AudioFilePlayResult, AudioFilePlayFeedback
 from std_msgs.msg import String
-
+from std_msgs.msg import Int8
 
 class ShellCmd:
     """Helpful class to spawn commands and keep track of them"""
@@ -57,25 +57,62 @@ class ShellCmd:
         os.killpg(self.process.pid, signal.SIGTERM)
         self.process.wait()
 
+class VolumeListener(rospy.SubscribeListener):
+    def __init__(self, service):
+        self.service = service
+        self.num_peers = 0
+
+    def peer_subscribe(self, topic_name, topic_publish, peer_publish):
+        if self.num_peers == 0:
+            self.service.enable_volume_service()
+        self.num_peers+=1
+
+    def peer_unsubscribe(self, topic_name, num_peers):
+        self.num_peers=num_peers
+        if num_peers == 0:
+            self.service.disable_volume_servce()
 
 class AudioFilePlayer(object):
-    def __init__(self):
-        rospy.loginfo("Initializing AudioFilePlayer...")
+    def __init__(self,
+                 volume_set_command='amixer -c 0 sset Master playback',
+                 volume_get_command='amixer -c 0 sget Master playback'):
         self.current_playing_process = None
-        self.afp_as = SimpleActionServer(rospy.get_name(), AudioFilePlayAction,
-                                         self.as_cb, auto_start=False)
-        self.afp_sub = rospy.Subscriber('~play', String, self.topic_cb,
-                                        queue_size=1)
+        self.volume_set_command = volume_set_command
+        self.volume_get_command = volume_get_command
+        self.curr_vol = 0
+
+        rospy.loginfo("Initializing AudioFilePlayer...")
+        rospy.loginfo("VolumeManager using base set command: '" +
+                      self.volume_set_command + "'")
+        rospy.loginfo("VolumeManager using base get command: '" +
+                      self.volume_get_command + "'")
         # By default this node plays files using the aplay command
         # Feel free to use any other command or flags
         # by using the params provided
         self.command = rospy.get_param('~/command', 'play')
         self.flags = rospy.get_param('~/flags', '')
         self.feedback_rate = rospy.get_param('~/feedback_rate', 10)
+
+        self.afp_as = SimpleActionServer(rospy.get_name(), AudioFilePlayAction,
+                                         self.as_cb, auto_start=False)
+        self.afp_sub = rospy.Subscriber('~play', String, self.topic_cb,
+                                        queue_size=1)
         self.afp_as.start()
         # Needs to be done after start
         self.afp_as.register_preempt_callback(self.as_preempt_cb)
 
+        self.volume_sub = rospy.Subscriber('~set_volume',
+                                    Int8,
+                                    self.volume_cb,
+                                    queue_size=1)
+        # Get volume to start publishing
+        self.curr_vol = self.get_current_volume()
+        self.volume_listener = VolumeListener(self)
+        self.volume_pub = rospy.Publisher('~get_volume',
+                                   Int8, subscriber_listener=self.volume_listener,
+                                   latch=True,
+                                   queue_size=1)
+        self.volume_timer = None
         rospy.loginfo(
             "Done, playing files from action server or topic interface.")
 
@@ -130,6 +167,65 @@ class AudioFilePlayer(object):
                       " with command: " + str(full_command))
         self.current_playing_process = ShellCmd(full_command)
 
+        self.pub = rospy.Publisher('~get_volume',
+                                   Int8,
+                                   latch=True,
+                                   queue_size=1)
+        self.timer = rospy.Timer(rospy.Duration(1.0), self.curr_vol_cb)
+
+    def curr_vol_cb(self, event):
+        self.curr_vol = self.get_current_volume()
+        self.volume_pub.publish(Int8(self.curr_vol))
+
+    def get_current_volume(self):
+        cmd = ShellCmd(self.volume_get_command)
+        while not cmd.is_done() and not rospy.is_shutdown():
+            rospy.sleep(0.1)
+        output = cmd.get_stdout()
+        rospy.logdebug("self.volume_get_command output: " + str(output))
+        # Output looks like:
+        # Simple mixer control 'Master',0
+        # Capabilities: pvolume pvolume-joined pswitch pswitch-joined
+        # Playback channels: Mono
+        # Limits: Playback 0 - 87
+        # Mono: Playback 44 [51%] [-32.25dB] [on]
+
+        pct_idx = output.index('%')
+        # At most 3 characters of 100%
+        pct_text = output[pct_idx - 3:pct_idx]
+        # Remove [ if it was less than 3 chars
+        pct_text = pct_text.replace('[', '')
+        # Remove spaces if it was less than 2 char
+        pct_text = pct_text.strip()
+        curr_vol = int(pct_text)
+        return curr_vol
+
+    def volume_cb(self, data):
+        if data.data > 100:
+            to_pct = 100
+        elif data.data < 0:
+            to_pct = 0
+        else:
+            to_pct = data.data
+        rospy.loginfo("Changing volume to: " + str(to_pct) + "%")
+        cmd_line = self.volume_set_command + " " + str(to_pct) + "%"
+        rospy.loginfo("Executing command: " + cmd_line)
+        cmd = ShellCmd(cmd_line)
+        while not cmd.is_done() and not rospy.is_shutdown():
+            rospy.sleep(0.1)
+        output = cmd.get_stdout()
+        rospy.logdebug("Set command output: " + str(output))
+
+    def enable_volume_service(self):
+        if not self.volume_timer:
+            rospy.loginfo("Enable audio volume subscription service.")
+            self.volume_timer = rospy.Timer(rospy.Duration(1.0), self.curr_vol_cb)
+
+    def disable_volume_servce(self):
+        if self.volume_timer:
+            rospy.loginfo("Disable audio volume subscription service.")
+            self.volume_timer.shutdown()
+            self.volume_timer = None
 
 if __name__ == '__main__':
     rospy.init_node('audio_file_player')

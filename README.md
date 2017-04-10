@@ -40,13 +40,10 @@ purpose) just modify the launch file to use the command and flags that you want:
 </launch>
 ````
 
-# Extra: Volume manager
-You have a tiny node to get and set the volume via a std_msgs/Int8 topic (values 0-100 representing the percentage of volume) in the scripts folder with it's launch file:
-
-    roslaunch audio_file_player volume_manager.launch
-
+# Managing Audio Volume
+You can get and set the volume via the following topics with std_msgs/Uint8 data type (values 0-100 representing the percentage of volume)
 By default the topics are:
 ```
-    /volume_manager/get_volume
-    /volume_manager/set_volume
+    /audio_file_player/get_volume
+    /audio_file_player/set_volume
 ```
