@@ -167,12 +167,6 @@ class AudioFilePlayer(object):
                       " with command: " + str(full_command))
         self.current_playing_process = ShellCmd(full_command)
 
-        self.pub = rospy.Publisher('~get_volume',
-                                   Int8,
-                                   latch=True,
-                                   queue_size=1)
-        self.timer = rospy.Timer(rospy.Duration(1.0), self.curr_vol_cb)
-
     def curr_vol_cb(self, event):
         self.curr_vol = self.get_current_volume()
         self.volume_pub.publish(Int8(self.curr_vol))
